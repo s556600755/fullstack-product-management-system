@@ -62,6 +62,22 @@ function App() {
 
     setProducts(newProducts);
   }
+
+  function updateProduct(id) {
+    const newProducts = products.map(function (product) {
+
+      if (product.id === id) {
+        return {
+          ...product,
+          price: product.price + 1000
+        };
+      }
+
+      return product;
+    });
+
+    setProducts(newProducts);
+  }
   return (
     <div>
       <h1>商品管理系統</h1>
@@ -114,6 +130,11 @@ function App() {
             <h2>{product.name}</h2>
             <p>價格：{product.price}</p>
             <p>庫存：{product.stock}</p>
+            <button onClick={function () {
+              updateProduct(product.id);
+            }}>
+              修改價格
+            </button>
             <button onClick={function () {
               deleteProduct(product.id);
             }}>
