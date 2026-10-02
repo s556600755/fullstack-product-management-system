@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "./App.css";
-function App() {
+function Dashboard({ authFetch, user, onLogout }) {
 
   const [products, setProducts] = useState([]);
   const [name, setName] = useState("");
@@ -12,7 +12,7 @@ function App() {
 
     async function getProducts() {
       try {
-        const response = await fetch("http://localhost:3000/products");
+        const response = await authFetch("http://localhost:3000/products");
         if (!response.ok) {
           throw new Error(`GET /products failed: HTTP ${response.status}`);
         }
@@ -29,7 +29,7 @@ function App() {
 
     getProducts();
 
-  }, []);
+  }, [authFetch]);
 
 
   async function addProduct(event) {
@@ -41,7 +41,7 @@ function App() {
 
     if (editingId !== null) {
       try {
-        const response = await fetch(`http://localhost:3000/products/${editingId}`, {
+        const response = await authFetch(`http://localhost:3000/products/${editingId}`, {
           method: "PUT",
           headers: {
             "Content-Type": "application/json"
@@ -78,7 +78,7 @@ function App() {
     }
 
     try {
-      const response = await fetch("http://localhost:3000/products", {
+      const response = await authFetch("http://localhost:3000/products", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -109,7 +109,7 @@ function App() {
 
   async function deleteProduct(id) {
     try {
-      const response = await fetch(`http://localhost:3000/products/${id}`, {
+      const response = await authFetch(`http://localhost:3000/products/${id}`, {
         method: "DELETE"
       });
 
@@ -151,6 +151,7 @@ function App() {
           <a href="#dashboard"><span aria-hidden="true">▦</span>Dashboard</a>
           <a className="nav-products" href="#products"><span aria-hidden="true">▤</span>Products</a>
         </nav>
+        <div className="account-panel"><span>{typeof user?.name === "string" ? user.name : "已登入"}</span><button type="button" onClick={onLogout}>登出</button></div>
         <div className="sidebar-note"><span className="sidebar-note-line" />商品與庫存，一目了然。<small>PRODUCT MANAGEMENT</small></div>
       </aside>
 
@@ -202,6 +203,126 @@ function App() {
       </main>
     </div>
   );
+}
+
+
+function readAuth() {
+  try {
+    const token = sessionStorage.getItem("authToken");
+    let user = null;
+    try { user = JSON.parse(sessionStorage.getItem("authUser")); } catch { /* Display data is optional. */ }
+    return token ? { token, user } : null;
+  } catch {
+    return null;
+  }
+}
+
+function Login({ onLogin, message }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const submitting = useRef(false);
+
+  async function login(event) {
+    event.preventDefault();
+    if (submitting.current) return;
+    submitting.current = true;
+    setIsLoggingIn(true);
+    setError("");
+    try {
+      const response = await fetch("http://localhost:3000/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password })
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setError(response.status < 500 && typeof data?.message === "string"
+          ? data.message : "登入服務暫時無法使用，請稍後再試。");
+        return;
+      }
+      if (typeof data?.token !== "string" || !data.token || !data.user || typeof data.user !== "object") {
+        setError("登入回應不完整，請稍後再試。");
+        return;
+      }
+      const { id, name, email: userEmail, role, created_at } = data.user;
+      onLogin(data.token, { id, name, email: userEmail, role, created_at });
+      setPassword("");
+    } catch {
+      setError("無法完成登入，請確認網路連線與瀏覽器儲存權限後再試。");
+    } finally {
+      submitting.current = false;
+      setIsLoggingIn(false);
+    }
+  }
+
+  return (
+    <main className="login-page">
+      <section className="login-card" aria-labelledby="login-title">
+        <div className="login-brand"><span className="brand-mark" aria-hidden="true">P</span><span>Product Console<small>商品管理系統</small></span></div>
+        <div className="login-content">
+          <p className="eyebrow">WORKSPACE ACCESS</p><h1 id="login-title">登入管理系統</h1>
+          <p className="page-description">登入後管理商品資訊與庫存。</p>
+          {(error || message) && <div className="error-banner" role="alert">{error || message}</div>}
+          <form className="login-form" onSubmit={login} aria-busy={isLoggingIn}>
+            <div className="field"><label htmlFor="login-email">Email</label><input id="login-email" type="email" autoComplete="username" required value={email} disabled={isLoggingIn} onChange={event => setEmail(event.target.value)} /></div>
+            <div className="field"><label htmlFor="login-password">Password</label><input id="login-password" type="password" autoComplete="current-password" required value={password} disabled={isLoggingIn} onChange={event => setPassword(event.target.value)} /></div>
+            <button className="button-primary" type="submit" disabled={isLoggingIn}>{isLoggingIn ? "登入中…" : "登入"}</button>
+          </form>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function App() {
+  const [auth, setAuth] = useState(readAuth);
+  const [loginMessage, setLoginMessage] = useState("");
+  const activeToken = useRef(auth?.token);
+
+  const clearAuth = useCallback((message = "") => {
+    activeToken.current = null;
+    try {
+      sessionStorage.removeItem("authToken");
+      sessionStorage.removeItem("authUser");
+    } catch {
+      // Still end the in-memory session if browser storage is unavailable.
+    }
+    setAuth(null);
+    setLoginMessage(message);
+  }, []);
+
+  function saveAuth(token, user) {
+    try {
+      sessionStorage.setItem("authToken", token);
+      sessionStorage.setItem("authUser", JSON.stringify(user));
+    } catch (error) {
+      clearAuth();
+      throw error;
+    }
+    activeToken.current = token;
+    setAuth({ token, user });
+    setLoginMessage("");
+  }
+
+  const token = auth?.token;
+  const authFetch = useCallback(async (url, options = {}) => {
+    const response = await fetch(url, {
+      ...options,
+      headers: { ...options.headers, Authorization: `Bearer ${token}` }
+    });
+    // An old request must not sign out a newer session.
+    if (activeToken.current !== token) throw new Error("已忽略舊登入狀態的回應");
+    if (response.status === 401) {
+      clearAuth("登入已失效，請重新登入");
+      throw new Error("登入已失效");
+    }
+    return response;
+  }, [token, clearAuth]);
+
+  if (!auth) return <Login onLogin={saveAuth} message={loginMessage} />;
+  return <Dashboard key={token} authFetch={authFetch} user={auth.user} onLogout={() => clearAuth()} />;
 }
 
 export default App;

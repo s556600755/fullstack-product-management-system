@@ -1,15 +1,126 @@
 const express = require("express");
 const cors = require("cors");
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
 const path = require("node:path");
 require("dotenv").config({
     path: path.resolve(__dirname, ".env"),
     quiet: true
 });
 const { getAllProducts, createProduct, updateProduct, deleteProduct } = require("./repositories/products.repository");
+const { findUserByEmail, createUser } = require("./repositories/users.repository");
+const { authenticateToken } = require("./middleware/auth.middleware");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+app.post("/auth/register", async function (req, res) {
+    const { name, email, password } = req.body ?? {};
+
+    if (typeof name !== "string" || name.trim() === "" || [...name.trim()].length > 100) {
+        return res.status(400).json({ message: "名稱必須是非空白字串，且最多 100 個字元" });
+    }
+    if (typeof email !== "string") {
+        return res.status(400).json({ message: "Email 必須是字串" });
+    }
+
+    const normalizedName = name.trim();
+    const normalizedEmail = email.trim().toLowerCase();
+    if ([...normalizedEmail].length > 255 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+        return res.status(400).json({ message: "請提供有效的 Email，且最多 255 個字元" });
+    }
+    if (typeof password !== "string" || [...password].length < 8) {
+        return res.status(400).json({ message: "密碼必須是字串，且至少 8 個字元" });
+    }
+    // bcrypt only processes the first 72 bytes; reject longer input instead of truncating it.
+    if (Buffer.byteLength(password, "utf8") > 72) {
+        return res.status(400).json({ message: "密碼的 UTF-8 長度不可超過 72 bytes" });
+    }
+
+    try {
+        const existingUser = await findUserByEmail(normalizedEmail);
+        if (existingUser) {
+            return res.status(409).json({ message: "此 Email 已被註冊" });
+        }
+
+        const passwordHash = await bcrypt.hash(password, 12);
+        const user = await createUser({
+            name: normalizedName,
+            email: normalizedEmail,
+            passwordHash,
+            role: "user"
+        });
+
+        res.status(201).json({
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            created_at: user.created_at
+        });
+    } catch (error) {
+        if (error.code === "ER_DUP_ENTRY") {
+            return res.status(409).json({ message: "此 Email 已被註冊" });
+        }
+        res.status(500).json({ message: "無法註冊，請稍後再試" });
+    }
+});
+
+app.post("/auth/login", async function (req, res) {
+    const { email, password } = req.body ?? {};
+
+    if (typeof email !== "string") {
+        return res.status(400).json({ message: "Email 必須是字串" });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    if ([...normalizedEmail].length > 255 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+        return res.status(400).json({ message: "請提供有效的 Email，且最多 255 個字元" });
+    }
+    if (typeof password !== "string" || [...password].length < 8) {
+        return res.status(400).json({ message: "密碼必須是字串，且至少 8 個字元" });
+    }
+    if (Buffer.byteLength(password, "utf8") > 72) {
+        return res.status(400).json({ message: "密碼的 UTF-8 長度不可超過 72 bytes" });
+    }
+
+    try {
+        const user = await findUserByEmail(normalizedEmail);
+        if (!user) {
+            return res.status(401).json({ message: "Email 或密碼錯誤" });
+        }
+
+        const passwordMatches = await bcrypt.compare(password, user.password_hash);
+        if (!passwordMatches) {
+            return res.status(401).json({ message: "Email 或密碼錯誤" });
+        }
+
+        const jwtSecret = process.env.JWT_SECRET;
+        if (!jwtSecret || jwtSecret.trim() === "" || jwtSecret === "replace_with_a_secure_secret") {
+            return res.status(500).json({ message: "無法登入，請稍後再試" });
+        }
+
+        const token = jwt.sign(
+            { userId: user.id, role: user.role },
+            jwtSecret,
+            { algorithm: "HS256", expiresIn: "1h" }
+        );
+
+        res.status(200).json({
+            token,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                role: user.role,
+                created_at: user.created_at
+            }
+        });
+    } catch {
+        res.status(500).json({ message: "無法登入，請稍後再試" });
+    }
+});
 
 function validateProductInput(name, price, stock) {
     if (typeof name !== "string" || name.trim() === "") {
@@ -37,7 +148,7 @@ function validateProductInput(name, price, stock) {
     return null;
 }
 
-app.post("/products", async function (req, res) {
+app.post("/products", authenticateToken, async function (req, res) {
     const { name, price, stock } = req.body ?? {};
 
     const validationError = validateProductInput(name, price, stock);
@@ -53,7 +164,7 @@ app.post("/products", async function (req, res) {
     }
 });
 
-app.delete("/products/:id", async function (req, res) {
+app.delete("/products/:id", authenticateToken, async function (req, res) {
     const id = Number(req.params.id);
 
     if (!/^\d+$/.test(req.params.id) || !Number.isSafeInteger(id) || id <= 0) {
@@ -71,7 +182,7 @@ app.delete("/products/:id", async function (req, res) {
     }
 });
 
-app.put("/products/:id", async function (req, res) {
+app.put("/products/:id", authenticateToken, async function (req, res) {
     const id = Number(req.params.id);
     const { name, price, stock } = req.body ?? {};
 
@@ -95,7 +206,7 @@ app.put("/products/:id", async function (req, res) {
     }
 });
 
-app.get("/products", async function (req, res) {
+app.get("/products", authenticateToken, async function (req, res) {
     try {
         const products = await getAllProducts();
         res.json(products);
